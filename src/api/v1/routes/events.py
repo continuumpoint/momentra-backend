@@ -3,6 +3,7 @@ from src.models.schemas import (
     EventCreateRequest,
     EventResponse,
     EventDetailResponse,
+    EventsListResponse,
     QRCodeResponse,
 )
 from src.services.event_service import EventService
@@ -25,6 +26,14 @@ def create_event(
         event_end_time=body.event_end_time,
         request=request,
     )
+
+
+@router.get("", response_model=EventsListResponse)
+def list_events(
+    request: Request,
+    organizer_id: str = Depends(get_current_organizer),
+):
+    return _service.list_events(organizer_id=organizer_id, request=request)
 
 
 @router.get("/{event_id}", response_model=EventDetailResponse)

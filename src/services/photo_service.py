@@ -49,7 +49,6 @@ class PhotoService:
         now = datetime.now(timezone.utc)
         start = _parse_dt(event["event_start_time"])
         deadline = _parse_dt(event["upload_deadline"])
-        # Make timezone aware if needed
         if start.tzinfo is None:
             start = start.replace(tzinfo=timezone.utc)
         if deadline.tzinfo is None:
@@ -77,9 +76,15 @@ class PhotoService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
         session = self.session_repo.get_session(event_id, device_fingerprint)
         if not session:
-            return GuestSessionResponse(remaining_uploads=settings.MAX_PHOTOS_PER_GUEST, uploaded_photos_count=0)
+            return GuestSessionResponse(
+                remaining_uploads=settings.MAX_PHOTOS_PER_GUEST,
+                uploaded_photos_count=0,
+            )
         remaining = self.session_repo.remaining_uploads(session)
-        return GuestSessionResponse(remaining_uploads=remaining, uploaded_photos_count=session["photo_count"])
+        return GuestSessionResponse(
+            remaining_uploads=remaining,
+            uploaded_photos_count=session["photo_count"],
+        )
 
     # ─── Upload ───────────────────────────────────────────────────────────────
 
@@ -113,12 +118,13 @@ class PhotoService:
         if remaining <= 0:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Upload limit of {settings.MAX_PHOTOS_PER_GUEST} photos per guest reached.",
+                detail=f"You have reached the upload limit of {settings.MAX_PHOTOS_PER_GUEST} photos.",
             )
         # Clamp to remaining quota
         files_to_process = files[:remaining]
 
         # 3. Process and upload each file
+        # storage_repo.upload_photo now returns a PATH not a URL
         photo_ids = []
         for upload_file in files_to_process:
             raw = await upload_file.read()
@@ -126,20 +132,25 @@ class PhotoService:
             if len(raw) > settings.MAX_UPLOAD_SIZE:
                 raise HTTPException(
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    detail=f"File {upload_file.filename!r} exceeds 10MB limit.",
+                    detail=f"File '{upload_file.filename}' exceeds the 10 MB size limit.",
                 )
             # Validate
-            validate_image_file(upload_file.content_type or "application/octet-stream", upload_file.filename or "upload")
+            validate_image_file(
+                upload_file.content_type or "application/octet-stream",
+                upload_file.filename or "upload",
+            )
             verify_image_content(raw)
             # Compress
             compressed = compress_image(raw)
-            # Store
-            file_url = self.storage_repo.upload_photo(event_id, compressed, upload_file.filename or "photo.jpg")
+            # Store — returns storage path, not URL
+            file_path = self.storage_repo.upload_photo(
+                event_id, compressed, upload_file.filename or "photo.jpg"
+            )
             photo = self.photo_repo.create_photo(
                 event_id=event_id,
                 guest_name=guest_name,
                 device_fingerprint=device_fingerprint,
-                file_url=file_url,
+                file_url=file_path,        # storing PATH in file_url column
                 file_size_bytes=len(compressed),
             )
             photo_ids.append(str(photo["id"]))
@@ -158,20 +169,32 @@ class PhotoService:
 
     # ─── Moderation ───────────────────────────────────────────────────────────
 
-    def get_event_photos(self, event_id: str, organizer_id: str, status_filter: Optional[str]) -> PhotosListResponse:
+    def get_event_photos(
+        self, event_id: str, organizer_id: str, status_filter: Optional[str]
+    ) -> PhotosListResponse:
         try:
             self.event_repo.assert_owns_event(event_id, organizer_id)
         except PermissionError:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
         except ValueError:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+
         photos = self.photo_repo.get_by_event(event_id, status_filter)
+
+        if not photos:
+            return PhotosListResponse(photos=[])
+
+        # Generate signed URLs in one bulk call — much faster than one at a time
+        paths = [p["file_url"] for p in photos]
+        signed_urls = self.storage_repo.get_signed_urls_bulk(paths)
+
         return PhotosListResponse(
             photos=[
                 PhotoRecord(
                     id=str(p["id"]),
                     guest_name=p["guest_name"],
-                    file_url=p["file_url"],
+                    # Fall back to raw path if signing fails for a specific file
+                    file_url=signed_urls.get(p["file_url"], p["file_url"]),
                     status=PhotoStatus(p["status"]),
                     uploaded_at=p["uploaded_at"],
                 )
@@ -197,13 +220,22 @@ class PhotoService:
         event = self.event_repo.get_by_id(event_id)
         if not event:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+
         photos = self.photo_repo.get_approved_for_gallery(event_id)
+
+        if not photos:
+            return GalleryResponse(event_name=event["event_name"], photos=[])
+
+        # Bulk sign all photo paths in one Supabase call
+        paths = [p["file_url"] for p in photos]
+        signed_urls = self.storage_repo.get_signed_urls_bulk(paths)
+
         return GalleryResponse(
             event_name=event["event_name"],
             photos=[
                 GalleryPhoto(
                     id=str(p["id"]),
-                    file_url=p["file_url"],
+                    file_url=signed_urls.get(p["file_url"], p["file_url"]),
                     guest_name=p["guest_name"],
                     uploaded_at=p["uploaded_at"],
                 )

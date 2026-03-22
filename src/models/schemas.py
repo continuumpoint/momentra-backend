@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, UUID4, field_validator
+from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional, List
 from datetime import datetime
 from enum import Enum
@@ -73,6 +73,10 @@ class EventDetailResponse(BaseModel):
     gallery_link: str
     qr_code_url: Optional[str] = None
     created_at: datetime
+
+
+class EventsListResponse(BaseModel):
+    events: List[EventResponse]
 
 
 # ─── Guest ────────────────────────────────────────────────────────────────────

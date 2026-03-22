@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from fastapi import HTTPException, status, Request
 from src.repositories.event_repository import EventRepository
 from src.repositories.storage_repository import StorageRepository
-from src.models.schemas import EventResponse, EventDetailResponse, QRCodeResponse
+from src.models.schemas import EventResponse, EventDetailResponse, EventsListResponse, QRCodeResponse
 from src.utils.links import build_upload_link, build_gallery_link
 from src.utils.logging import get_logger
 
@@ -52,6 +52,17 @@ class EventService:
         data = self._build_response(event, base_url)
         return EventResponse(**data)
 
+    def list_events(self, organizer_id: str, request: Request) -> EventsListResponse:
+        """Returns all events belonging to the authenticated organiser."""
+        events = self.event_repo.get_by_organizer(organizer_id)
+        base_url = _get_frontend_base(request)
+        return EventsListResponse(
+            events=[
+                EventResponse(**self._build_response(e, base_url))
+                for e in events
+            ]
+        )
+
     def get_event(self, event_id: str, organizer_id: str, request: Request) -> EventDetailResponse:
         try:
             event = self.event_repo.assert_owns_event(event_id, organizer_id)
@@ -76,7 +87,12 @@ class EventService:
         upload_link = build_upload_link(event_id, base_url)
 
         # Generate QR code
-        qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=10, border=4)
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=10,
+            border=4,
+        )
         qr.add_data(upload_link)
         qr.make(fit=True)
         img = qr.make_image(fill_color="black", back_color="white")
@@ -87,3 +103,4 @@ class EventService:
         qr_url = self.storage_repo.upload_qr_code(event_id, qr_bytes)
         self.event_repo.update_qr_code_url(event_id, qr_url)
         return QRCodeResponse(qr_code_url=qr_url)
+    

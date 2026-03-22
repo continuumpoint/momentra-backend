@@ -63,3 +63,19 @@ class PhotoRepository:
             .execute()
         )
         return result.data or []
+
+    def get_event_id_for_photo(self, photo_id: str) -> Optional[str]:
+        """
+        Returns the event_id for a given photo ID.
+        Used by bulk_update_photos to build the correct gallery link.
+        """
+        result = (
+            self.db.table("photos")
+            .select("event_id")
+            .eq("id", photo_id)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return result.data[0]["event_id"]
+        return None
