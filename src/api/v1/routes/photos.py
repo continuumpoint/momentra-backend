@@ -1,5 +1,6 @@
 from typing import List, Optional
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from pydantic import BaseModel
 from src.models.schemas import (
     BulkPhotoUpdateRequest,
     BulkPhotoUpdateResponse,
@@ -75,3 +76,15 @@ def bulk_update_photos(
     organizer_id: str = Depends(get_current_organizer),
 ):
     return _service.bulk_update_photos(organizer_id, body.photo_ids, body.action, _frontend_base(request))
+
+
+# ─── Guest photo deletion ─────────────────────────────────────────────────────
+
+class DeletePhotoRequest(BaseModel):
+    photo_id: str
+    device_fingerprint: str
+
+
+@router.post("/events/{event_id}/delete-photo")
+def delete_guest_photo(event_id: str, body: DeletePhotoRequest):
+    return _service.delete_guest_photo(event_id, body.photo_id, body.device_fingerprint)

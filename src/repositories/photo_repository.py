@@ -35,12 +35,31 @@ class PhotoRepository:
             raise ValueError("Failed to create photo record")
         return result.data[0]
 
+    def get_by_id(self, photo_id: str) -> Optional[dict]:
+        result = (
+            self.db.table("photos")
+            .select("*")
+            .eq("id", photo_id)
+            .limit(1)
+            .execute()
+        )
+        return result.data[0] if result.data else None
+
     def get_by_event(self, event_id: str, status: Optional[str] = None) -> List[dict]:
         query = self.db.table("photos").select("*").eq("event_id", event_id)
         if status:
             query = query.eq("status", status)
         result = query.order("uploaded_at", desc=True).execute()
         return result.data or []
+
+    def delete_photo(self, photo_id: str) -> bool:
+        result = (
+            self.db.table("photos")
+            .delete()
+            .eq("id", photo_id)
+            .execute()
+        )
+        return bool(result.data)
 
     def bulk_update_status(self, photo_ids: List[str], status: str) -> int:
         """Updates status for all given photo IDs. Returns count updated."""

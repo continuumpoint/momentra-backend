@@ -1,5 +1,5 @@
 import io
-from PIL import Image
+from PIL import Image, ExifTags
 from fastapi import HTTPException, status
 from src.config.settings import get_settings
 
@@ -7,6 +7,11 @@ settings = get_settings()
 
 ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+# EXIF orientation tag number
+ORIENTATION_TAG = next(
+    (k for k, v in ExifTags.TAGS.items() if v == "Orientation"), None
+)
 
 
 def validate_image_file(content_type: str, filename: str) -> None:
@@ -24,13 +29,35 @@ def validate_image_file(content_type: str, filename: str) -> None:
         )
 
 
+def _fix_orientation(img: Image.Image) -> Image.Image:
+    """Rotate image according to EXIF orientation so it displays correctly."""
+    if ORIENTATION_TAG is None:
+        return img
+    try:
+        exif = img._getexif()
+        if exif is None:
+            return img
+        orientation = exif.get(ORIENTATION_TAG)
+        rotations = {3: 180, 6: 270, 8: 90}
+        if orientation in rotations:
+            img = img.rotate(rotations[orientation], expand=True)
+    except Exception:
+        pass
+    return img
+
+
 def compress_image(raw_bytes: bytes) -> bytes:
     """
     Compress image to JPEG at configured quality.
+    Fixes EXIF orientation before compressing.
     Returns compressed bytes.
     """
     try:
         img = Image.open(io.BytesIO(raw_bytes))
+
+        # Fix EXIF orientation before any conversion
+        img = _fix_orientation(img)
+
         # Convert to RGB (handles RGBA, P-mode PNGs, etc.)
         if img.mode in ("RGBA", "P", "LA"):
             background = Image.new("RGB", img.size, (255, 255, 255))
@@ -61,3 +88,4 @@ def verify_image_content(raw_bytes: bytes) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="File content is not a valid image.",
         )
+    

@@ -124,25 +124,20 @@ class PhotoService:
         files_to_process = files[:remaining]
 
         # 3. Process and upload each file
-        # storage_repo.upload_photo now returns a PATH not a URL
         photo_ids = []
         for upload_file in files_to_process:
             raw = await upload_file.read()
-            # Size check
             if len(raw) > settings.MAX_UPLOAD_SIZE:
                 raise HTTPException(
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                     detail=f"File '{upload_file.filename}' exceeds the 10 MB size limit.",
                 )
-            # Validate
             validate_image_file(
                 upload_file.content_type or "application/octet-stream",
                 upload_file.filename or "upload",
             )
             verify_image_content(raw)
-            # Compress
             compressed = compress_image(raw)
-            # Store — returns storage path, not URL
             file_path = self.storage_repo.upload_photo(
                 event_id, compressed, upload_file.filename or "photo.jpg"
             )
@@ -150,14 +145,13 @@ class PhotoService:
                 event_id=event_id,
                 guest_name=guest_name,
                 device_fingerprint=device_fingerprint,
-                file_url=file_path,        # storing PATH in file_url column
+                file_url=file_path,
                 file_size_bytes=len(compressed),
             )
             photo_ids.append(str(photo["id"]))
 
         # 4. Update session photo count
         self.session_repo.increment_photo_count(str(session["id"]), len(photo_ids))
-        # Refresh session for remaining count
         updated_session = self.session_repo.get_session(event_id, device_fingerprint)
         new_remaining = self.session_repo.remaining_uploads(updated_session)
 
@@ -184,7 +178,6 @@ class PhotoService:
         if not photos:
             return PhotosListResponse(photos=[])
 
-        # Generate signed URLs in one bulk call — much faster than one at a time
         paths = [p["file_url"] for p in photos]
         signed_urls = self.storage_repo.get_signed_urls_bulk(paths)
 
@@ -193,7 +186,6 @@ class PhotoService:
                 PhotoRecord(
                     id=str(p["id"]),
                     guest_name=p["guest_name"],
-                    # Fall back to raw path if signing fails for a specific file
                     file_url=signed_urls.get(p["file_url"], p["file_url"]),
                     status=PhotoStatus(p["status"]),
                     uploaded_at=p["uploaded_at"],
@@ -205,12 +197,8 @@ class PhotoService:
     def bulk_update_photos(
         self, organizer_id: str, photo_ids: List[str], action: str, frontend_base: str
     ) -> BulkPhotoUpdateResponse:
-        # Validate photos belong to organizer's events (security check)
-        # For efficiency we trust organizer-scoped API but verify at least one photo exists
         new_status = "approved" if action == "approve" else "rejected"
         count = self.photo_repo.bulk_update_status(photo_ids, new_status)
-        # We can't easily build gallery_link without event_id here;
-        # return generic dashboard URL
         gallery_link = f"{frontend_base}/dashboard"
         return BulkPhotoUpdateResponse(updated_count=count, gallery_link=gallery_link)
 
@@ -226,7 +214,6 @@ class PhotoService:
         if not photos:
             return GalleryResponse(event_name=event["event_name"], photos=[])
 
-        # Bulk sign all photo paths in one Supabase call
         paths = [p["file_url"] for p in photos]
         signed_urls = self.storage_repo.get_signed_urls_bulk(paths)
 
@@ -242,3 +229,57 @@ class PhotoService:
                 for p in photos
             ],
         )
+
+    # ─── Guest photo deletion ─────────────────────────────────────────────────
+
+    def delete_guest_photo(
+        self, event_id: str, photo_id: str, device_fingerprint: str
+    ) -> dict:
+        """
+        Guest deletes their own uploaded photo.
+        - Verifies photo belongs to this guest via device_fingerprint
+        - Blocks deletion if photo is already approved or rejected
+        - Deletes from Supabase Storage
+        - Deletes DB record
+        - Decrements guest session photo count
+        """
+        photo = self.photo_repo.get_by_id(photo_id)
+        if not photo:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Photo not found.",
+            )
+
+        # Verify ownership
+        if photo["device_fingerprint"] != device_fingerprint:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to delete this photo.",
+            )
+
+        # Verify belongs to this event
+        if photo["event_id"] != event_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Photo not found in this event.",
+            )
+
+        # Block if already reviewed
+        if photo["status"] in ("approved", "rejected"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot delete — this photo has already been {photo['status']} by the organizer.",
+            )
+
+        # Delete from storage
+        self.storage_repo.delete_photo(photo["file_url"])
+
+        # Delete DB record
+        self.photo_repo.delete_photo(photo_id)
+
+        # Decrement session photo count
+        session = self.session_repo.get_session(event_id, device_fingerprint)
+        if session and session["photo_count"] > 0:
+            self.session_repo.increment_photo_count(str(session["id"]), -1)
+
+        return {"deleted": True, "photo_id": photo_id}

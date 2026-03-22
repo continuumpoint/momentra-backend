@@ -109,3 +109,12 @@ class StorageRepository:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to generate image URLs. Please refresh and try again.",
             )
+
+    def delete_photo(self, path: str) -> bool:
+        """Delete a photo from Supabase Storage by its path."""
+        try:
+            self.db.storage.from_(settings.STORAGE_BUCKET_PHOTOS).remove([path])
+            return True
+        except Exception as exc:
+            logger.error("Failed to delete photo from storage %s: %s", path, exc)
+            return False
