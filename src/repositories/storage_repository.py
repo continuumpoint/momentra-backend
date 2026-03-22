@@ -51,9 +51,8 @@ class StorageRepository:
                 path=path,
                 expires_in=60 * 60 * 24 * 365,
             )
-            return signed["signed_url"]
-        except Exception as exc:
-            logger.error("Failed to generate signed URL for QR code %s: %s", path, exc)
+            logger.info("Supabase create_signed_url response: %s", signed)
+            return signed["signedURL"]
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to generate QR code URL. Please try again.",
@@ -69,9 +68,8 @@ class StorageRepository:
                 path=path,
                 expires_in=SIGNED_URL_EXPIRY_SECONDS,
             )
-            return signed["signed_url"]
-        except Exception as exc:
-            logger.error("Failed to generate signed URL for path %s: %s", path, exc)
+            logger.info("Supabase create_signed_url (photo) response: %s", signed)
+            return signed["signedURL"]
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to generate access URL for image. Please try again.",
@@ -81,21 +79,32 @@ class StorageRepository:
         """
         Generate signed URLs for multiple paths in one Supabase call.
         Returns a dict of { path: signed_url }.
-        More efficient than calling get_signed_url() in a loop.
+        Skips any paths that are already full URLs (legacy photos stored
+        before the signed URL migration).
         """
         if not paths:
             return {}
+
+        # Separate legacy full URLs from storage paths
+        storage_paths = [p for p in paths if not p.startswith("http")]
+        legacy_urls = {p: p for p in paths if p.startswith("http")}
+
+        if not storage_paths:
+            return legacy_urls
+
         try:
             results = self.db.storage.from_(settings.STORAGE_BUCKET_PHOTOS).create_signed_urls(
-                paths=paths,
+                paths=storage_paths,
                 expires_in=SIGNED_URL_EXPIRY_SECONDS,
             )
-            # Supabase python client v2 returns list of { path, signed_url, error }
-            return {
-                item["path"]: item["signed_url"]
+            logger.info("Supabase create_signed_urls (bulk) response: %s", results)
+            signed = {
+                item["path"]: item["signedURL"]
                 for item in results
-                if item.get("signed_url")
+                if item and item.get("signedURL")
             }
+            # Merge signed URLs with legacy full URLs
+            return {**signed, **legacy_urls}
         except Exception as exc:
             logger.error("Failed to generate bulk signed URLs: %s", exc)
             raise HTTPException(
