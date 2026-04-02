@@ -27,7 +27,7 @@ class Settings(BaseSettings):
 
     # Upload limits
     MAX_UPLOAD_SIZE: int = 10_485_760
-    MAX_PHOTOS_PER_GUEST: int = 15
+    MAX_PHOTOS_PER_GUEST: int = 100
     JPEG_COMPRESSION_QUALITY: int = 80
 
     # Storage buckets
